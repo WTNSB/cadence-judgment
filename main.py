@@ -70,10 +70,8 @@ def parse_notes(notes_csv: str, start_octave: int = 4) -> List[Note]:
 # --- 2. 推論エンジン（ここが大きく進化！） ---
 class ChordAnalyzer:
     def __init__(self):
-        self.chord_dictionary = CHORD_DICT # 先ほど定義した辞書
+        self.chord_dictionary = CHORD_DICT
 
-        # (ステップ差, 半音差) を度数名に変換する2次元マッピング
-        # P: Perfect, M: Major, m: minor, d: diminished, A: Augmented
         self.INTERVAL_MAP = {
             (0, 0): 'P1',  (0, 1): 'A1',  (0, -1): 'd1',
             (1, 1): 'm2',  (1, 2): 'M2',  (1, 3): 'A2',  (1, 0): 'd2',
@@ -85,20 +83,33 @@ class ChordAnalyzer:
         }
 
     def _get_interval(self, root: Note, target: Note) -> str:
-        """ 2つの音符間の厳密な度数を計算する """
-        # 五線譜上のステップ差 (0=1度, 1=2度, ... 6=7度)
+        # 1. 1オクターブ内に丸めた基本度数を計算
         step_diff = (target.step_index - root.step_index) % 7
-        
-        # 鍵盤上の半音差
         semi_diff = (target.absolute_semitone - root.absolute_semitone) % 12
         
-        return self.INTERVAL_MAP.get((step_diff, semi_diff), f"Unknown({step_diff},{semi_diff})")
+        base_interval = self.INTERVAL_MAP.get((step_diff, semi_diff))
+        if not base_interval:
+            return f"Unknown({step_diff},{semi_diff})"
+            
+        # 2. 実際の半音差から、オクターブを超えているか判定
+        actual_semi_diff = target.absolute_semitone - root.absolute_semitone
+        
+        quality = base_interval[0] # 'P', 'M', 'm', 'A', 'd'
+        number = int(base_interval[1:]) # 1, 2, 3, 4, 5, 6, 7
+        
+        # 3. テンションの正規化
+        # ルートより1オクターブ以上高く、かつ 2, 4, 6度の場合は 9, 11, 13度に変換
+        if actual_semi_diff >= 12 and number in [2, 4, 6]:
+            return f"{quality}{number + 7}"
+            
+        # 1, 3, 5, 7度は何オクターブ離れていても基本度数のまま返す
+        return base_interval
 
     def analyze(self, notes: List[Note]) -> str:
         if not notes: return "No notes"
 
         sorted_notes = sorted(notes, key=lambda n: n.absolute_semitone)
-        root_note = sorted_notes[0] # まだ一番下の音をルートと仮定
+        root_note = sorted_notes[0]
 
         intervals = set()
         for note in sorted_notes:
@@ -113,15 +124,17 @@ class ChordAnalyzer:
 
         return f"Input: [{notes_str}] -> Intervals: [{intervals_str}] -> Analyzed: {root_name} {quality}"
 
-# --- 3. 異名同音のテスト ---
+# --- 実行テスト ---
 if __name__ == "__main__":
     analyzer = ChordAnalyzer()
 
-    # テスト1: 普通のCメジャー
+    # 以前のテスト
     print("Test 1:", analyzer.analyze(parse_notes("C, E, G")))
-    
-    # テスト2: EをFbに変えた場合（半音数は同じだが、度数が異なる）
     print("Test 2:", analyzer.analyze(parse_notes("C, Fb, G")))
+    print("Test 3:", analyzer.analyze(parse_notes("B4, D5, F5, Ab5")))
 
-    # テスト3: ディミニッシュコード（厳密な度数が機能しているか）
-    print("Test 3:", analyzer.analyze(parse_notes("B, D, F, Ab")))
+    # 今回のテンションテスト
+    print("Test 4:", analyzer.analyze(parse_notes("C4, E4, G4, D5"))) # Add9
+    print("Test 5:", analyzer.analyze(parse_notes("C4, E4, G4, B4, D5"))) # Maj9
+    print("Test 6:", analyzer.analyze(parse_notes("G4, B4, D5, F5, Ab5"))) # Dom7(b9)
+    print("Test 7:", analyzer.analyze(parse_notes("C4, G4, E5"))) # C Major (E5がM3に正規化されるか)

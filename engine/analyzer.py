@@ -41,7 +41,8 @@ class ChordAnalyzer:
         self._search_rootless(sorted_notes, input_pcs, bass_note, bass_name, voicing_type, categorized_results, key_context)
         self._search_ust_and_polychord(sorted_notes, unique_cands, input_pcs, bass_note, bass_name, voicing_type, categorized_results, key_context)
         self._search_fallback_rulebased(sorted_notes, unique_cands, bass_note, bass_name, voicing_type, categorized_results, key_context)
-        return self._format_output(sorted_notes, bass_name, categorized_results, threshold)
+        # analyzeの最後をこう変えると、自動化の時に楽になります
+        return self._format_output(sorted_notes, bass_name, categorized_results, threshold), categorized_results
     
     def _search_fallback_rulebased(self, sorted_notes: List[Note], unique_cands: dict, bass_note: Note, bass_name: str, voicing_type: str, results: dict, key_context: KeyContext):
         """辞書にないテンションの組み合わせを動的生成する"""
@@ -51,8 +52,8 @@ class ChordAnalyzer:
                 dummy_root.octave -= 1
                 
             intervals = {get_interval(dummy_root, note) for note in sorted_notes}
-            cand_alter_str = "#" if cand.alter == 1 else "b" if cand.alter == -1 else ""
-            root_name = f"{cand.step}{cand_alter_str}"
+            # 修正後のコード
+            root_name = key_context.get_note_name(root_pc)
             is_root_pos = (root_pc == bass_note.pitch_class)
 
             if self.chord_dictionary.get(frozenset(intervals)):
@@ -78,7 +79,13 @@ class ChordAnalyzer:
                     name = f"{root_name} {generated_quality}" if is_root_pos else f"{root_name} {generated_quality} / {bass_name}"
                     
                     if not any(r['name'].startswith(name) for r in results[category]):
-                        results[category].append({"name": f"{name} ({voicing_type}) [生成]", "score": score})
+                        results[category].append({
+                            "name": f"{name} ({voicing_type}) [生成]", 
+                            "score": score,
+                            "root_pc": root_pc,            # 追加
+                            "quality": generated_quality,   # 追加
+                            "notes": sorted_notes          # 追加
+                        })
 
     def _search_ust_and_polychord(self, sorted_notes: List[Note], unique_cands: Dict[int, Note], input_pcs: Set[int], bass_note: Note, bass_name: str, voicing_type: str, results: Dict, key_context: KeyContext):
         """アッパーストラクチャートライアド（UST）およびポリコードの分割探索"""
@@ -153,7 +160,15 @@ class ChordAnalyzer:
                             score -= 10 
                         
                         if not any(r['name'].startswith(ust_name) for r in results["特殊形 (Special)"]):
-                            results["特殊形 (Special)"].append({"name": f"{ust_name} (UST) ({voicing_type})", "score": score})
+                            # 修正後:
+                            results["特殊形 (Special)"].append({
+                                "name": f"{ust_name} (UST) ({voicing_type})",
+                                "score": score,
+                                "root_pc": bottom_root_pc, # ボトムのルート（C7のCなど）
+                                "quality": bottom_quality,  # ボトムのクオリティ（7 など）
+                                "notes": sorted_notes,
+                                "is_ust": True             # オプションでUSTフラグを持たせても便利です
+                            })
 
     def _calculate_inversion_penalty(self, bass_interval: int) -> int:
         """
@@ -199,42 +214,50 @@ class ChordAnalyzer:
             if quality:
                 category = self._get_category(is_root_pos, False, quality, root_pc, bass_note)
                 
-                # スコア計算の精緻化
                 if category == "特殊形 (Special)":
                     score = 75 
+                    name = f"{quality} on {bass_name}"
                 elif is_root_pos:
-                    score = 80 # 基本形は満点(80)
+                    score = 80
+                    name = f"{root_name} {quality}"
                 else:
-                    # 転回形・オンコードはベース音の度数によってペナルティを引く
                     bass_interval = (bass_note.pitch_class - root_pc) % 12
                     score = 80 - self._calculate_inversion_penalty(bass_interval)
+                    name = f"{root_name} {quality} / {bass_name}"
                 
-                if category == "特殊形 (Special)":
-                    name = f"{quality} on {bass_name}"
-                else:
-                    name = f"{root_name} {quality}" if is_root_pos else f"{root_name} {quality} / {bass_name}"
-                    
-                results[category].append({"name": f"{name} ({voicing_type})", "score": score})
+                results[category].append({
+                    "name": f"{name} ({voicing_type})",
+                    "score": score,
+                    "root_pc": root_pc,
+                    "quality": quality,
+                    "notes": sorted_notes
+                })
             
             # B. Omit5 補完
-            # （※ここでquality_omitを定義する処理が必要でした）
-            if not quality and 'P5' not in intervals:
-                intervals_with_p5 = set(intervals)
-                intervals_with_p5.add('P5')
-                quality_omit = self.chord_dictionary.get(frozenset(intervals_with_p5))
-                
-                if quality_omit:
-                    category = self._get_category(is_root_pos, False, quality_omit, root_pc, bass_note)
+            else:
+                if 'P5' not in intervals:
+                    intervals_with_p5 = set(intervals)
+                    intervals_with_p5.add('P5')
+                    quality_omit = self.chord_dictionary.get(frozenset(intervals_with_p5))
                     
-                    # スコア計算の精緻化 (Omit5なので基礎点は65)
-                    if is_root_pos:
-                        score = 65
-                    else:
-                        bass_interval = (bass_note.pitch_class - root_pc) % 12
-                        score = 65 - self._calculate_inversion_penalty(bass_interval)
+                    if quality_omit:
+                        category = self._get_category(is_root_pos, False, quality_omit, root_pc, bass_note)
                         
-                    name = f"{root_name} {quality_omit}(omit5)" if is_root_pos else f"{root_name} {quality_omit}(omit5) / {bass_name}"
-                    results[category].append({"name": f"{name} ({voicing_type})", "score": score})
+                        if is_root_pos:
+                            score = 65
+                            name = f"{root_name} {quality_omit}(omit5)"
+                        else:
+                            bass_interval = (bass_note.pitch_class - root_pc) % 12
+                            score = 65 - self._calculate_inversion_penalty(bass_interval)
+                            name = f"{root_name} {quality_omit}(omit5) / {bass_name}"
+                            
+                        results[category].append({
+                            "name": f"{name} ({voicing_type})",
+                            "score": score,
+                            "root_pc": root_pc,
+                            "quality": quality_omit,
+                            "notes": sorted_notes
+                        })
 
     def _search_rootless(self, sorted_notes: List[Note], input_pcs: Set[int], bass_note: Note, bass_name: str, voicing_type: str, results: Dict, key_context: KeyContext):
         missing_pcs = [pc for pc in range(12) if pc not in input_pcs]
@@ -268,8 +291,59 @@ class ChordAnalyzer:
                 score = 30 + tension_bonus - (10 if is_omit5 else 0)
                 omit_str = "(omit5)" if is_omit5 else ""
                 name = f"{root_name} {quality}{omit_str}(Rootless) / {bass_name}"
-                results["ルートレス (Rootless)"].append({"name": f"{name} ({voicing_type})", "score": score})
+                results["ルートレス (Rootless)"].append({
+                    "name": f"{name} ({voicing_type})", 
+                    "score": score,
+                    "root_pc": phantom_pc,      # ★ 生データを追加
+                    "quality": quality,      # ★ 生データを追加
+                    "notes": sorted_notes    # ★ 生データを追加
+                })
 
+    def get_best_interpretation(self, notes: List[Note], key: str = "C", threshold: int = 40):
+        """
+        全探索フェーズの結果から、最もスコアの高い解釈を1つだけデータとして返す
+        """
+        # KeyContextの初期化（内部の解析で使用）
+        key_context = KeyContext(key)
+        
+        sorted_notes = sorted(notes, key=lambda n: n.absolute_semitone)
+        bass_note = sorted_notes[0]
+        bass_name = key_context.get_note_name(bass_note.pitch_class)
+        spread = sorted_notes[-1].absolute_semitone - sorted_notes[0].absolute_semitone
+        voicing_type = "Open" if spread > 12 else "Closed"
+        input_pcs = {n.pitch_class for n in sorted_notes}
+        unique_cands = {n.pitch_class: n for n in sorted_notes}
+
+        results_container = {
+            "基本形 (Root Position)": [],
+            "転回形 (Inversion)": [],
+            "オンコード (On-Chord)": [],
+            "ルートレス (Rootless)": [],
+            "特殊形 (Special)": []
+        }
+
+        # 各探索フェーズを実行して結果を溜める
+        self._search_normal(sorted_notes, unique_cands, bass_note, bass_name, voicing_type, results_container, key_context)
+        self._search_rootless(sorted_notes, input_pcs, bass_note, bass_name, voicing_type, results_container, key_context)
+        self._search_ust_and_polychord(sorted_notes, unique_cands, input_pcs, bass_note, bass_name, voicing_type, results_container, key_context)
+        self._search_fallback_rulebased(sorted_notes, unique_cands, bass_note, bass_name, voicing_type, results_container, key_context)
+
+        # 全カテゴリーから候補をフラットなリストに集める
+        all_candidates = []
+        for cat_list in results_container.values():
+            all_candidates.extend(cat_list)
+        
+        # 閾値以上の候補をスコア順にソート
+        valid_candidates = [c for c in all_candidates if c['score'] >= threshold]
+        
+        if not valid_candidates:
+            return None
+            
+        # スコアが高い順、かつ同じスコアなら「基本形」が優先されるようにソート
+        valid_candidates.sort(key=lambda x: x['score'], reverse=True)
+        
+        return valid_candidates[0]
+    
     def _format_output(self, sorted_notes: List[Note], bass_name: str, categorized_results: Dict, threshold: int) -> str:
         notes_str = ", ".join(str(n) for n in sorted_notes)
         output_lines = [f"Input: [{notes_str}] (Bass: {bass_name})", "-"*40]

@@ -5,6 +5,7 @@ from dictionaries.chord_dict import CHORD_DICT
 from engine.fallback_generator import RuleBasedGenerator
 from utils.formatter import KeyContext
 
+
 class ChordAnalyzer:
     def __init__(self):
         self.chord_dictionary = CHORD_DICT
